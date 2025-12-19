@@ -23,7 +23,7 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "8289166397:AAEST3GJseXHl-FeNNdczz4gQ7VtrX3PdXo"
 ADMIN_IDS = [int(x) for x in (os.getenv("ADMIN_IDS") or "1711726347").split(",")]
 
-FREE_LIMIT = 50 * 1024 * 1024        # 50MB
+FREE_LIMIT = 50 * 1024 * 1024           # 50MB
 PREMIUM_LIMIT = 2 * 1024 * 1024 * 1024  # 2GB
 COOLDOWN_SECONDS = 30
 DOWNLOAD_DIR = "downloads"
@@ -32,13 +32,6 @@ PLANS = {
     "30": {"stars": 100, "days": 30},
     "90": {"stars": 250, "days": 90},
     "life": {"stars": 500, "days": 0}
-}
-
-QUALITY_MAP = {
-    "360": "best[height<=360]",
-    "720": "best[height<=720]",
-    "1080": "best[height<=1080]",
-    "best": "bestvideo+bestaudio/best"
 }
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -114,7 +107,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
 
     await update.message.reply_text(
-        "اختر اللغة / Choose language",
+        "Choose language / اختر اللغة",
         reply_markup=lang_keyboard()
     )
 
@@ -131,7 +124,7 @@ async def set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
           "📥 Send X video link")
     )
 
-# ================== DOWNLOAD FLOW ==================
+# ================== LINK HANDLER ==================
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     url = update.message.text
@@ -149,6 +142,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=quality_keyboard()
     )
 
+# ================== DOWNLOAD (FIXED) ==================
 async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -156,18 +150,30 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = context.user_data.get("url")
     quality_key = q.data.split("_")[1]
-    ydl_format = QUALITY_MAP.get(quality_key)
+
+    FORMAT_MAP = {
+        "360": "best[height<=360]/best",
+        "720": "best[height<=720]/best",
+        "1080": "best[height<=1080]/best",
+        "best": "best"
+    }
 
     ydl_opts = {
         "outtmpl": f"{DOWNLOAD_DIR}/%(id)s.%(ext)s",
-        "format": ydl_format,
-        "merge_output_format": "mp4"
+        "format": FORMAT_MAP.get(quality_key, "best"),
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            file_path = ydl.prepare_filename(info).replace(".webm", ".mp4")
+            file_path = ydl.prepare_filename(info)
+
+            if not file_path.endswith(".mp4"):
+                file_path = file_path.rsplit(".", 1)[0] + ".mp4"
 
         size = os.path.getsize(file_path)
         limit = PREMIUM_LIMIT if is_premium(uid) else FREE_LIMIT
@@ -184,13 +190,17 @@ async def download_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await q.message.reply_document(
             document=open(file_path, "rb"),
-            caption="✅ Downloaded"
+            caption="✅ تم التحميل بنجاح"
         )
         os.remove(file_path)
 
     except Exception as e:
-        await q.message.reply_text("❌ Error occurred")
-        print(e)
+        print("DOWNLOAD ERROR:", e)
+        await q.message.reply_text(
+            t(uid,
+              "❌ تعذر تحميل هذا الفيديو (جرّب رابطًا آخر)",
+              "❌ Failed to download this video (try another link)")
+        )
 
 # ================== PAYMENT ==================
 async def buy_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -219,10 +229,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     plan = PLANS[plan_key]
     uid = update.effective_user.id
 
-    if plan["days"] == 0:
-        premium_until = 9999999999
-    else:
-        premium_until = int(time.time()) + plan["days"] * 86400
+    premium_until = 9999999999 if plan["days"] == 0 else int(time.time()) + plan["days"] * 86400
 
     c.execute("UPDATE users SET premium_until=? WHERE user_id=?", (premium_until, uid))
     c.execute("INSERT INTO payments VALUES (?,?,?)", (uid, plan["stars"], int(time.time())))
